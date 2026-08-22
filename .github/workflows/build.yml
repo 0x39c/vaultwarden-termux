@@ -1,0 +1,69 @@
+name: Build Termux Vaultwarden
+
+run-name: Build Termux Vaultwarden ${{ inputs.tag || github.ref_name }}
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Vaultwarden tag to build"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: clone vaultwarden
+        run: |
+          git clone https://github.com/dani-garcia/vaultwarden.git
+          cd vaultwarden
+          git fetch --tags
+
+      - name: determine tag
+        id: tag
+        run: |
+          cd vaultwarden
+
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
+          fi
+
+          echo "TAG=$TAG"
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+
+      - name: checkout tag
+        run: |
+          cd vaultwarden
+          git checkout ${{ steps.tag.outputs.TAG }}
+
+      - name: install rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - name: Install cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build Vaultwarden (using cross)
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static -C strip=symbols"
+        run: |
+          cd vaultwarden
+          cross build --features sqlite,vendored_openssl --release --target aarch64-unknown-linux-musl
+
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG }}
+          name: Vaultwarden ${{ steps.tag.outputs.TAG }}
+          prerelease: false
+          files: vaultwarden/target/aarch64-unknown-linux-musl/release/vaultwarden
+        env:
+          GITHUB_TOKEN: ${{ secrets.TOKEN }}
