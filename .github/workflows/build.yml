@@ -1,0 +1,106 @@
+name: Vaultwarden Termux Build
+run-name: Termux Vaultwarden Build ${{ inputs.tag || github.ref_name }}
+
+permissions:
+  contents: write
+  
+concurrency:
+  group: vaultwarden-termux-build
+  cancel-in-progress: false
+  
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Vaultwarden version
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:  
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+          persist-credentials: true
+      - name: clone vaultwarden
+        run: |
+          git clone https://github.com/dani-garcia/vaultwarden.git
+          cd vaultwarden
+          git fetch --tags
+
+      - name: determine tag
+        id: tag
+        run: |
+          cd vaultwarden
+
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
+          fi
+
+          echo "TAG=$TAG"
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+
+      - name: checkout tag
+        run: |
+          cd vaultwarden
+          git checkout ${{ steps.tag.outputs.TAG }}
+
+      - name: install rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - name: Install cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build Vaultwarden (using cross)
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static -C strip=symbols"
+        run: |
+          cd vaultwarden
+          cross build --features sqlite,vendored_openssl --release --target aarch64-unknown-linux-musl
+
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG }}
+          name: Vaultwarden ${{ steps.tag.outputs.TAG }}
+          prerelease: false
+          files: vaultwarden/target/aarch64-unknown-linux-musl/release/vaultwarden
+        env:
+          GITHUB_TOKEN: ${{ secrets.TOKEN }}
+
+      - name: Update upstream version
+        if: success()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+      
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+      
+          TAG="${{ steps.tag.outputs.TAG }}"
+          echo "$TAG" > .upstream-version
+      
+          git add .upstream-version
+      
+          if git diff --cached --quiet; then
+            echo "Upstream version unchanged."
+            exit 0
+          fi
+      
+          COMMIT_MSG="chore: update vaultwarden version to ${TAG}"
+          LAST_COMMIT_MSG=$(git log -1 --pretty=%s)
+      
+          if [[ "$LAST_COMMIT_MSG" == "chore: update vaultwarden version to "* ]]; then
+            git commit --amend -m "$COMMIT_MSG"
+            git push --force-with-lease origin HEAD:${GITHUB_REF_NAME}
+          else
+            git commit -m "$COMMIT_MSG"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
